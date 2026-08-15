@@ -1,151 +1,130 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
-import math
-from pathlib import Path
+import streamlit.components.v1 as components
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+st.set_page_config(page_title="Swing Screener Pro", layout="wide")
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+st.title("⚡ Dynamic Swing Trading Screener")
+st.write("Strategy: **High Volume (1.8x+) + Price Action Breakout / 20-SMA Support**")
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
-
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
-
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
-
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
-
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
-
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
-
-    return gdp_df
-
-gdp_df = get_gdp_data()
-
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
+# Default High-Beta & Momentum Stock List
+DEFAULT_TICKERS = [
+    "COCHINSHIP.NS", "BEL.NS", "MAZDOCK.NS", "RVNL.NS", "DIXON.NS", 
+    "PARAS.NS", "DATAPATTNS.NS", "SAVITA.NS", "TRENT.NS", "KAYNES.NS", 
+    "HAL.NS", "ZENTEC.NS", "63MOONS.NS"
 ]
 
-st.header('GDP over time', divider='gray')
+@st.cache_data(ttl=300)
+def fetch_stock_data(tickers):
+    screened_data = []
+    for ticker in tickers:
+        try:
+            df = yf.download(ticker, period="60d", interval="1d", progress=False)
+            if df.empty or len(df) < 20:
+                continue
+            
+            # Formatting DataFrame columns
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
 
-''
+            # Calculations
+            df['SMA20'] = df['Close'].rolling(window=20).mean()
+            df['VolSMA20'] = df['Volume'].rolling(window=20).mean()
 
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
+            latest = df.iloc[-1]
+            prev = df.iloc[-2]
 
-''
-''
+            ltp = round(float(latest['Close']), 2)
+            high_20d = round(float(df['High'].iloc[-21:-1].max()), 2)
+            sma20 = round(float(latest['SMA20']), 2)
+            vol_surge = round(float(latest['Volume'] / latest['VolSMA20']), 2)
+            pct_change = round(float(((ltp - prev['Close']) / prev['Close']) * 100), 2)
 
+            # Technical Conditions Check
+            is_volume_high = vol_surge >= 1.8
+            is_breakout = ltp >= high_20d
+            is_near_sma = (ltp >= sma20 * 0.98) and (ltp <= sma20 * 1.03)
 
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
+            status = "Hold/Wait"
+            if is_volume_high and is_breakout:
+                status = "🚀 Breakout Setup"
+            elif is_volume_high and is_near_sma:
+                status = "🎯 Dip Buy Setup"
+            elif is_volume_high:
+                status = "⚡ High Vol Accumulation"
 
-st.header(f'GDP in {to_year}', divider='gray')
+            screened_data.append({
+                "Ticker": ticker.replace(".NS", ""),
+                "LTP (₹)": ltp,
+                "Change (%)": pct_change,
+                "Vol Surge": f"{vol_surge}x",
+                "20-SMA (₹)": sma20,
+                "20D High (₹)": high_20d,
+                "Status": status,
+                "Raw_LTP": ltp,
+                "Raw_SMA20": sma20,
+                "Raw_High20": high_20d
+            })
+        except Exception as e:
+            continue
+            
+    return pd.DataFrame(screened_data)
 
-''
+# App Navigation
+tab1, tab2 = st.tabs(["🚀 Market Scanner", "📈 Chart & Trade Setup"])
 
-cols = st.columns(4)
+with tab1:
+    if st.button("🚀 Scan Market Now", use_container_width=True):
+        st.cache_data.clear()
 
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
+    with st.spinner("Fetching Live Market Data..."):
+        df_results = fetch_stock_data(DEFAULT_TICKERS)
 
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
+    if not df_results.empty:
+        # Highlight Setup Stocks
+        display_df = df_results[["Ticker", "LTP (₹)", "Change (%)", "Vol Surge", "20-SMA (₹)", "Status"]]
+        st.dataframe(display_df, use_container_width=True)
+    else:
+        st.warning("No data found or market closed.")
 
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
+with tab2:
+    st.subheader("🎯 Auto Trade Levels & Live Chart")
+    selected_stock = st.selectbox("Select Stock to Analyze:", [t.replace(".NS", "") for t in DEFAULT_TICKERS])
 
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+    if not df_results.empty and selected_stock in df_results["Ticker"].values:
+        row = df_results[df_results["Ticker"] == selected_stock].iloc[0]
+        
+        ltp = row["Raw_LTP"]
+        sma20 = row["Raw_SMA20"]
+        high20 = row["Raw_High20"]
+
+        # Calculate Auto Swing Levels
+        dip_min = round(sma20 * 0.99, 2)
+        dip_max = round(sma20 * 1.015, 2)
+        breakout_entry = round(high20 * 1.005, 2)
+        sl = round(min(sma20 * 0.96, ltp * 0.95), 2)
+        target1 = round(ltp + (ltp - sl) * 1.5, 2)
+        target2 = round(ltp + (ltp - sl) * 2.5, 2)
+
+        # Show Trade Card
+        col1, col2 = st.columns(2)
+        with col1:
+            st.info(f"**Dip Buying Zone:** ₹{dip_min} – ₹{dip_max}")
+            st.success(f"**Breakout Entry:** Above ₹{breakout_entry}")
+            st.error(f"**Stop Loss (SL):** ₹{sl}")
+        with col2:
+            st.metric("Target 1 (Short-Term)", f"₹{target1}")
+            st.metric("Target 2 (Mid-Term)", f"₹{target2}")
+
+        st.markdown("---")
+        st.subheader(f"📊 Live TradingView Chart ({selected_stock})")
+
+        # TradingView Embed Widget
+        tv_widget = f"""
+        <div class="tradingview-widget-container">
+          <iframe src="https://s.tradingview.com/widgetembed/?frameElementId=tradingview_1&symbol=NSE%3A{selected_stock}&interval=D&hidesidetoolbar=1&symboledit=1&saveimage=1&toolbarbg=f1f3f6&studies=[]&theme=light&style=1&timezone=Asia%2FKolkata"
+                  width="100%" height="450" frameborder="0" allowtransparency="true" scrolling="no"></iframe>
+        </div>
+        """
+        components.html(tv_widget, height=460)
